@@ -1,0 +1,686 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.blizzard.com/wow/ui/">
+<!--
+  YABB board frame: two-pane bulletin board (movable/resizable top-level
+  Frame, two ScrollFrame+ScrollChild panes, pooled virtual row templates),
+  modeled on the shape of the live-installed GroupBulletinBoard.xml. The
+  row anatomy (intent tag / role icons / class-colored name / category-
+  colored content pill / level / age) and the titlebar/rail dressing are
+  this addon's own design.
+
+  THE BACKDROP RULE: no native XML <Backdrop> element on the main frame at
+  all. A flat dark panel plus a thin gold hairline needs an explicit tint
+  (SetBackdropColor / SetBackdropBorderColor) that a texture-only XML
+  <Backdrop> block can't express, so UI.lua's init() calls
+  ns.Compat.applyBackdrop(frame, {...}) instead: the exact same native-
+  SetBackdrop-only helper (never BackdropTemplate) FiltersUI.lua already
+  uses for its own window frames. YABBFrame here is a plain, template-less
+  <Frame>, so it still has the native C-side SetBackdrop every 3.3.5 frame
+  carries regardless of XML declaration (see Compat.lua's own header).
+
+  Flat rectangles below (row stripe, intent tag, pill background/dot,
+  category dot/count-badge/active background, hairlines) are declared as
+  bare <Texture> regions with no `file` attribute, retinted per-instance at
+  render time via the native `region:SetTexture(r,g,b,a)` numeric-color
+  overload (a real 3.3.5 API, not merely an XML convenience: SetTexture
+  accepts either a file path string or four 0-1 numbers to paint a solid
+  color), since their colors (category/role/focus-state) are only known
+  once UI.lua has a listing/category in hand. Role icons are the one
+  exception: those need the real `Compat.ROLE_ICON` atlas texture plus
+  SetTexCoord, wired from Lua same as everything else here.
+
+  All interactive behavior (OnClick/OnEnter/OnLeave/OnMouseWheel/etc.) is
+  wired programmatically from UI.lua's ns.UI.init(): this frame's top-level
+  Frame (non-virtual) fires its OnLoad the instant this XML file is parsed
+  during addon load, which can be BEFORE UI.lua has executed, so any inline
+  script here calling an addon-defined handler at OnLoad time would risk a
+  load-order hazard. Drag/resize scripts below use ONLY frame-native
+  methods (StartMoving/StartSizing/etc, no addon globals) so they stay
+  safely inline; the same is true of the HookScript-added OnDragStop/
+  OnMouseUp saves UI.lua wires later, since those only ever fire long after
+  the whole addon has loaded. Row/category templates are virtual (not
+  instantiated until UI.lua's row pool creates them, long after every file
+  has loaded), so they carry no scripts at all here either: UI.lua's
+  row-pool creation sets every script via :SetScript(...) at creation time.
+
+  Schema notes: a <FontString> or <Texture> may not appear directly inside
+  a <Frames> element - it belongs in a <Layers> block instead. Also, never
+  a literal double hyphen inside an XML comment (use a single hyphen, as
+  elsewhere in this file). Either mistake is schema-invalid or a parse
+  error, and Ascension's client responds by silently never opening the
+  board, with no Lua error at all.
+-->
+
+	<!-- ============================================================
+	     Listing row (right pane). One row, two lines: intent tag, role
+	     icons and counts, class-colored poster name, category-colored
+	     content pill, level, age; the raw chat line sits under the name
+	     (hidden in compact mode). A left stripe carries the same
+	     category color as the pill. Modeled on
+	     GroupBulletinBoard_TmpRequest's virtual-Button-with-named-
+	     FontString-children shape (GroupBulletinBoard.xml:277-310), with
+	     more named regions for this row's richer anatomy. Every child
+	     below is anchored via single LEFT/RIGHT points chained
+	     left-to-right (each point is its own region's vertical center),
+	     so the whole row stays vertically centered regardless of
+	     individual font heights without needing per-region Y math.
+	     ============================================================ -->
+	<Button name="YABBListingRow" virtual="true">
+		<Size>
+			<AbsDimension x="300" y="40"/>
+		</Size>
+		<Layers>
+			<Layer level="ARTWORK">
+				<!-- Category accent stripe, tinted to ns.C.categories' color
+				     for listing.category (see UI.lua's renderListingRow /
+				     categoryColorOf). -->
+				<Texture name="$parentStripe" parentKey="Stripe">
+					<Size>
+						<AbsDimension x="3" y="0"/>
+					</Size>
+					<Anchors>
+						<Anchor point="TOPLEFT">
+							<Offset><AbsDimension x="0" y="-4"/></Offset>
+						</Anchor>
+						<Anchor point="BOTTOMLEFT">
+							<Offset><AbsDimension x="0" y="4"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+
+				<!-- Intent tag (LFG/LFM), a small tinted pill. -->
+				<Texture name="$parentIntentBg" parentKey="IntentBg">
+					<Size>
+						<AbsDimension x="34" y="15"/>
+					</Size>
+					<Anchors>
+						<Anchor point="LEFT">
+							<Offset><AbsDimension x="10" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<FontString name="$parentIntentText" parentKey="IntentText" inherits="GameFontNormalSmall" justifyH="CENTER" justifyV="MIDDLE" maxLines="1">
+					<Anchors>
+						<Anchor point="TOPLEFT" relativeTo="$parentIntentBg" relativePoint="TOPLEFT"/>
+						<Anchor point="BOTTOMRIGHT" relativeTo="$parentIntentBg" relativePoint="BOTTOMRIGHT"/>
+					</Anchors>
+				</FontString>
+
+				<!-- Role icons plus need-counts, fixed TANK/HEAL/DPS slots
+				     (the only roles Compat.ROLE_TEXCOORD defines): hidden
+				     per-slot in Lua when a listing doesn't mention that role.
+				     Fixed slots (not a collapsing flex row) trade a little
+				     unused space for pooled-row simplicity: no per-render
+				     anchor rechaining needed. -->
+				<Texture name="$parentRoleTankIcon" parentKey="RoleTankIcon">
+					<Size><AbsDimension x="16" y="16"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentIntentBg" relativePoint="RIGHT">
+							<Offset><AbsDimension x="10" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<FontString name="$parentRoleTankCount" parentKey="RoleTankCount" inherits="GameFontNormalSmall" justifyH="LEFT" maxLines="1">
+					<Size><AbsDimension x="16" y="14"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentRoleTankIcon" relativePoint="RIGHT">
+							<Offset><AbsDimension x="1" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+
+				<Texture name="$parentRoleHealIcon" parentKey="RoleHealIcon">
+					<Size><AbsDimension x="16" y="16"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentRoleTankCount" relativePoint="RIGHT">
+							<Offset><AbsDimension x="6" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<FontString name="$parentRoleHealCount" parentKey="RoleHealCount" inherits="GameFontNormalSmall" justifyH="LEFT" maxLines="1">
+					<Size><AbsDimension x="16" y="14"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentRoleHealIcon" relativePoint="RIGHT">
+							<Offset><AbsDimension x="1" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+
+				<Texture name="$parentRoleDpsIcon" parentKey="RoleDpsIcon">
+					<Size><AbsDimension x="16" y="16"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentRoleHealCount" relativePoint="RIGHT">
+							<Offset><AbsDimension x="6" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<FontString name="$parentRoleDpsCount" parentKey="RoleDpsCount" inherits="GameFontNormalSmall" justifyH="LEFT" maxLines="1">
+					<Size><AbsDimension x="20" y="14"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentRoleDpsIcon" relativePoint="RIGHT">
+							<Offset><AbsDimension x="1" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+
+				<!-- Poster name, class-colored via an inline |cffRRGGBB code
+				     (Compat.playerInfo guid -> Compat.classColor; grey
+				     fallback when the client can't resolve a class: degrades
+				     cleanly, never a "?"). Fixed-width column: WoW character
+				     names cap at 12 characters, comfortably inside 112px at
+				     this font. -->
+				<FontString name="$parentName" parentKey="Name" inherits="GameFontNormal" justifyH="LEFT" maxLines="1">
+					<Size><AbsDimension x="112" y="14"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentRoleDpsCount" relativePoint="RIGHT">
+							<Offset><AbsDimension x="10" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+
+				<!-- Raw chat text: a subtle truncated second line under the
+				     name, same column width as Name. XML anchor here is just
+				     a harmless initial placeholder: UI.lua's layoutListingRow
+				     repositions it (and toggles Show/Hide) every render based
+				     on the live compact-mode toggle, same "computed at render
+				     time" convention as Name/PillBg below. maxLines=1 is this
+				     row template's own established truncation idiom (every
+				     other FontString here relies on it, none call
+				     SetWordWrap): never wraps, never grows the row. UI.lua
+				     additionally pre-truncates the string itself with a
+				     trailing "..." so the cut is visibly intentional, not
+				     just an abrupt clip. -->
+				<FontString name="$parentRaw" parentKey="Raw" inherits="GameFontDisableSmall" justifyH="LEFT" maxLines="1">
+					<Size><AbsDimension x="112" y="12"/></Size>
+					<Anchors>
+						<Anchor point="TOPLEFT" relativeTo="$parentName" relativePoint="BOTTOMLEFT">
+							<Offset><AbsDimension x="0" y="-2"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+
+				<!-- Level: resolveLevel's live source (guild/party/friend/
+				     unit) when known; if that's unresolved and the listing
+				     is a real LFG post, a bare self-level parsed from the
+				     poster's own text (UI.lua's resolvedLevel). "-" when
+				     nothing resolves - never a "?". Age: relative time since
+				     lastSeen. Both fixed-width, right-anchored from the row's
+				     own right edge. Declared BEFORE the pill below because
+				     WoW resolves named anchors in document order within one
+				     <Layers> block: a forward reference to a not-yet-parsed
+				     sibling silently fails to anchor, so this file keeps
+				     every anchor backward-only throughout. -->
+				<FontString name="$parentAgeText" parentKey="AgeText" inherits="GameFontDisableSmall" justifyH="RIGHT" maxLines="1">
+					<Size><AbsDimension x="30" y="14"/></Size>
+					<Anchors>
+						<Anchor point="RIGHT">
+							<Offset><AbsDimension x="-10" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+				<FontString name="$parentLevelText" parentKey="LevelText" inherits="GameFontHighlightSmall" justifyH="RIGHT" maxLines="1">
+					<Size><AbsDimension x="36" y="14"/></Size>
+					<Anchors>
+						<Anchor point="RIGHT" relativeTo="$parentAgeText" relativePoint="LEFT">
+							<Offset><AbsDimension x="-10" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+
+				<!-- Content pill: target-or-category text, tinted by
+				     ns.C.categories' color for listing.category (see
+				     UI.lua's categoryColorOf). Flexible width (fills the gap
+				     up to the level column) via two horizontal anchors. -->
+				<Texture name="$parentPillBg" parentKey="PillBg">
+					<Size><AbsDimension x="10" y="18"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentName" relativePoint="RIGHT">
+							<Offset><AbsDimension x="10" y="0"/></Offset>
+						</Anchor>
+						<Anchor point="RIGHT" relativeTo="$parentLevelText" relativePoint="LEFT">
+							<Offset><AbsDimension x="-8" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<Texture name="$parentPillDot" parentKey="PillDot">
+					<Size><AbsDimension x="6" y="6"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentPillBg" relativePoint="LEFT">
+							<Offset><AbsDimension x="6" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<FontString name="$parentPillText" parentKey="PillText" inherits="GameFontHighlightSmall" justifyH="LEFT" maxLines="1">
+					<Size><AbsDimension x="10" y="14"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentPillDot" relativePoint="RIGHT">
+							<Offset><AbsDimension x="6" y="0"/></Offset>
+						</Anchor>
+						<Anchor point="RIGHT" relativeTo="$parentPillBg" relativePoint="RIGHT">
+							<Offset><AbsDimension x="-6" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+			</Layer>
+		</Layers>
+		<!-- Hover highlight: a real, standard Blizzard texture, confirmed
+		     live on this client, e.g. channelframe.xml:183. -->
+		<HighlightTexture file="Interface\QuestFrame\UI-QuestTitleHighlight" alphaMode="ADD"/>
+	</Button>
+
+	<!-- ============================================================
+	     Category row (left rail). Small colored dot (reads
+	     ns.C.categories' color, see UI.lua's categoryColorOf/
+	     categoryDotColor), label, and a count badge (gold-tinted text
+	     when this row is focused).
+
+	     Two more regions exist for the hide-toggle gesture, both hidden
+	     by default and Show/Hide'd every render by UI.renderCategories
+	     only, never by anything inline here. Strike is a no-file
+	     solid-fill line (same technique as Divider/RailSep1) UI.lua sizes
+	     to the live Label width (Label:GetStringWidth()) to fake
+	     strikethrough, since no FontString strikethrough exists on this
+	     client. HiddenMark overlays Dot (declared after it, so it draws
+	     on top within this same ARTWORK layer) with a small "off" glyph
+	     placeholder, plain text per this file's own established
+	     convention (see UI.lua's NEUTRAL_INTENT_LABEL), not a guessed
+	     icon texture path.
+	     ============================================================ -->
+	<Button name="YABBCategoryRow" virtual="true">
+		<Size>
+			<AbsDimension x="170" y="22"/>
+		</Size>
+		<Layers>
+			<Layer level="ARTWORK">
+				<Texture name="$parentBg" parentKey="Bg">
+					<Anchors>
+						<Anchor point="TOPLEFT"/>
+						<Anchor point="BOTTOMRIGHT"/>
+					</Anchors>
+				</Texture>
+				<Texture name="$parentDot" parentKey="Dot">
+					<Size><AbsDimension x="8" y="8"/></Size>
+					<Anchors>
+						<Anchor point="LEFT">
+							<Offset><AbsDimension x="10" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<!-- CountBg/CountText declared BEFORE Label (which anchors its
+				     RIGHT edge to CountBg's LEFT): backward-only anchors
+				     throughout this file, see the row template's own note
+				     above on why forward references are avoided. -->
+				<Texture name="$parentCountBg" parentKey="CountBg">
+					<Size><AbsDimension x="26" y="16"/></Size>
+					<Anchors>
+						<Anchor point="RIGHT">
+							<Offset><AbsDimension x="-8" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<FontString name="$parentCountText" parentKey="CountText" inherits="GameFontNormalSmall" justifyH="CENTER" justifyV="MIDDLE" maxLines="1">
+					<Anchors>
+						<Anchor point="TOPLEFT" relativeTo="$parentCountBg" relativePoint="TOPLEFT"/>
+						<Anchor point="BOTTOMRIGHT" relativeTo="$parentCountBg" relativePoint="BOTTOMRIGHT"/>
+					</Anchors>
+				</FontString>
+				<FontString name="$parentLabel" parentKey="Label" inherits="GameFontNormal" justifyH="LEFT" maxLines="1">
+					<Size><AbsDimension x="10" y="14"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentDot" relativePoint="RIGHT">
+							<Offset><AbsDimension x="8" y="0"/></Offset>
+						</Anchor>
+						<Anchor point="RIGHT" relativeTo="$parentCountBg" relativePoint="LEFT">
+							<Offset><AbsDimension x="-6" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+				<!-- Fake strikethrough: LEFT-anchored to Label's own LEFT point
+				     (which is Label's vertical center, per this file's
+				     every-anchor-is-a-center convention), so it lands centered
+				     on the label with zero extra Y math; UI.lua sets its width
+				     to Label:GetStringWidth() and Shows/Hides it per-render. -->
+				<Texture name="$parentStrike" parentKey="Strike">
+					<Size><AbsDimension x="0" y="1"/></Size>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentLabel" relativePoint="LEFT"/>
+					</Anchors>
+				</Texture>
+				<!-- Eye-off marker: centered on Dot (declared after it so it
+				     draws on top), shown only while the row is hidden. -->
+				<FontString name="$parentHiddenMark" parentKey="HiddenMark" inherits="GameFontDisableSmall" justifyH="CENTER" justifyV="MIDDLE" maxLines="1">
+					<Size><AbsDimension x="12" y="12"/></Size>
+					<Anchors>
+						<Anchor point="CENTER" relativeTo="$parentDot" relativePoint="CENTER"/>
+					</Anchors>
+				</FontString>
+			</Layer>
+		</Layers>
+		<HighlightTexture file="Interface\QuestFrame\UI-QuestTitleHighlight" alphaMode="ADD"/>
+	</Button>
+
+	<!-- ============================================================
+	     Main frame. Plain <Frame>, no inherits attribute at all: native
+	     C-side SetBackdrop still exists on it regardless (see file-top
+	     note); styled from UI.lua via ns.Compat.applyBackdrop.
+	     ============================================================ -->
+	<Frame name="YABBFrame" parent="UIParent" hidden="true" movable="true" resizable="true"
+		enableMouse="true" frameStrata="HIGH" toplevel="true">
+		<Size>
+			<AbsDimension x="900" y="560"/>
+		</Size>
+		<Anchors>
+			<Anchor point="CENTER"/>
+		</Anchors>
+
+		<Layers>
+			<Layer level="ARTWORK">
+				<!-- Titlebar band background plus bottom hairline: a flat
+				     tint rather than a gradient, since a gradient isn't a
+				     native Texture primitive on this client. -->
+				<!-- Inset 1px on left/right/top (and shortened 1px so the
+				     bottom edge still lands on TitlebarLine at y=-46): the
+				     window's own native SetBackdrop border (UI.lua
+				     applyBackdrop, edgeSize=1) lives on the BORDER draw
+				     layer, one level below this ARTWORK texture, so an
+				     edge-to-edge band here overdrew the top-edge hairline and
+				     the top 46px of the left/right hairlines at this
+				     texture's 0.5 alpha ("border reads thinner across the
+				     titlebar"). Insetting leaves row 0 and columns 0/W-1 to
+				     the BORDER-layer gold. -->
+				<Texture name="$parentTitlebarBg" parentKey="TitlebarBg">
+					<Size><AbsDimension x="0" y="45"/></Size>
+					<Anchors>
+						<Anchor point="TOPLEFT">
+							<Offset><AbsDimension x="1" y="-1"/></Offset>
+						</Anchor>
+						<Anchor point="TOPRIGHT">
+							<Offset><AbsDimension x="-1" y="-1"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<!-- Same 1px inset on left/right, same reason (minor: this is
+				     a 1px-tall line so it only ever clipped 1px of each
+				     border column). -->
+				<Texture name="$parentTitlebarLine" parentKey="TitlebarLine">
+					<Size><AbsDimension x="0" y="1"/></Size>
+					<Anchors>
+						<Anchor point="TOPLEFT">
+							<Offset><AbsDimension x="1" y="-46"/></Offset>
+						</Anchor>
+						<Anchor point="TOPRIGHT">
+							<Offset><AbsDimension x="-1" y="-46"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+
+				<!-- Filter/search box background (flat dark tint, see
+				     file-top note on the no-file Texture technique).
+				     Declared BEFORE the wordmark/pulse block below (which
+				     anchors to it): backward-only anchors throughout this
+				     file, see the row template's note on forward-reference
+				     anchors silently failing within one <Layers> block. -->
+				<Texture name="$parentFilterBg" parentKey="FilterBg">
+					<Size><AbsDimension x="150" y="22"/></Size>
+					<Anchors>
+						<Anchor point="TOPRIGHT">
+							<Offset><AbsDimension x="-76" y="-10"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+
+				<!-- Wordmark plus sub-label plus version, chained
+				     LEFT->RIGHT so they stay vertically level regardless of
+				     font-size differences (each LEFT/RIGHT anchor point is
+				     its own region's vertical center, see file-top note).
+				     Wordmark font is swapped to Fonts\MORPHEUS.TTF (the
+				     client's own serif-ish quest-title font) from Lua,
+				     pcall-guarded: inherits a plain font object here as the
+				     safe fallback if that ever fails. -->
+				<FontString name="$parentTitle" parentKey="Title" inherits="GameFontNormalLarge" text="YABB" maxLines="1" justifyH="LEFT">
+					<Anchors>
+						<Anchor point="TOPLEFT">
+							<Offset><AbsDimension x="16" y="-13"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+				<FontString name="$parentSubtitle" parentKey="Subtitle" inherits="GameFontDisableSmall" text="BULLETIN BOARD" maxLines="1" justifyH="LEFT">
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentTitle" relativePoint="RIGHT">
+							<Offset><AbsDimension x="8" y="-2"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+				<!-- Needs an explicit name (not just parentKey) because Pulse
+				     below targets it via relativeTo="$parentVersionText":
+				     relativeTo resolves by global name string, which
+				     parentKey alone does not create. -->
+				<FontString name="$parentVersionText" parentKey="VersionText" inherits="GameFontDisableSmall" maxLines="1" justifyH="LEFT">
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentSubtitle" relativePoint="RIGHT">
+							<Offset><AbsDimension x="8" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+
+				<!-- Server-pulse line: the board's total listing count,
+				     built in UI.lua's buildPulseLine(). Flexible width (two
+				     horizontal anchors) so it fills the gap up to the search
+				     box without overlapping it. -->
+				<FontString name="$parentPulse" parentKey="Pulse" inherits="GameFontHighlightSmall" justifyH="LEFT" maxLines="1">
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentVersionText" relativePoint="RIGHT">
+							<Offset><AbsDimension x="16" y="0"/></Offset>
+						</Anchor>
+						<Anchor point="RIGHT" relativeTo="$parentFilterBg" relativePoint="LEFT">
+							<Offset><AbsDimension x="-16" y="0"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+
+				<!-- Vertical divider between rail and listings pane, a
+				     no-file solid-Texture region. Anchored via fixed offsets
+				     (both TOPLEFT and BOTTOMLEFT) rather than
+				     relativeTo="YABBCategoryScroll": this whole <Layers>
+				     block resolves before <Frames>, so a relativeTo
+				     targeting that scroll frame's name would target a
+				     not-yet-existing name. -->
+				<Texture name="$parentDivider" parentKey="Divider">
+					<Size><AbsDimension x="1" y="0"/></Size>
+					<Anchors>
+						<Anchor point="TOPLEFT">
+							<Offset><AbsDimension x="198" y="-56"/></Offset>
+						</Anchor>
+						<Anchor point="BOTTOMLEFT">
+							<Offset><AbsDimension x="198" y="40"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+
+				<!-- Footer hairline. No click-legend text here - FooterExpire
+				     is the only footer text, independently right-anchored. -->
+				<!-- Same 1px left/right inset as TitlebarBg/TitlebarLine
+				     above, same overdraw class (minor: 1px x 2 columns). -->
+				<Texture name="$parentFooterLine" parentKey="FooterLine">
+					<Size><AbsDimension x="0" y="1"/></Size>
+					<Anchors>
+						<Anchor point="BOTTOMLEFT">
+							<Offset><AbsDimension x="1" y="30"/></Offset>
+						</Anchor>
+						<Anchor point="BOTTOMRIGHT">
+							<Offset><AbsDimension x="-1" y="30"/></Offset>
+						</Anchor>
+					</Anchors>
+				</Texture>
+				<FontString name="$parentFooterExpire" parentKey="FooterExpire" inherits="GameFontDisableSmall" justifyH="RIGHT" maxLines="1">
+					<Anchors>
+						<Anchor point="BOTTOMRIGHT">
+							<Offset><AbsDimension x="-16" y="10"/></Offset>
+						</Anchor>
+					</Anchors>
+				</FontString>
+			</Layer>
+		</Layers>
+
+		<Frames>
+			<!-- Close: default UIPanelCloseButton OnClick already hides its
+			     GetParent(), no extra wiring needed. -->
+			<Button parentKey="CloseButton" inherits="UIPanelCloseButton">
+				<Anchors>
+					<Anchor point="TOPRIGHT">
+						<Offset><AbsDimension x="-4" y="-4"/></Offset>
+					</Anchor>
+				</Anchors>
+			</Button>
+
+			<!-- Settings gear: plain Button, textured from Lua with the real
+			     stock gear icon (Interface\Buttons\UI-OptionsButton,
+			     confirmed live on this client via Details_EncounterDetails/
+			     frames.lua:507 and Details/frames/window_options2_sections.lua).
+			     Calls ns.FiltersUI.openSettings() if present (guarded): the
+			     settings panel, which itself links back into the rules
+			     editor via its own button. -->
+			<Button parentKey="GearButton">
+				<Size><AbsDimension x="24" y="24"/></Size>
+				<Anchors>
+					<Anchor point="TOPRIGHT">
+						<Offset><AbsDimension x="-42" y="-9"/></Offset>
+					</Anchor>
+				</Anchors>
+			</Button>
+
+			<!-- Filter/search EditBox. No stock template (InputBoxTemplate's
+			     3-slice blue border doesn't match this window's flat dark
+			     panel): plain EditBox, font set from Lua via SetFontObject,
+			     same as FiltersUI.lua's own proven createScrollEditBox
+			     helper. -->
+			<EditBox name="$parentFilterBox" parentKey="FilterBox" autoFocus="false" letters="80">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeTo="$parentFilterBg" relativePoint="TOPLEFT">
+						<Offset><AbsDimension x="6" y="-4"/></Offset>
+					</Anchor>
+					<Anchor point="BOTTOMRIGHT" relativeTo="$parentFilterBg" relativePoint="BOTTOMRIGHT">
+						<Offset><AbsDimension x="-6" y="4"/></Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnEscapePressed>
+						self:ClearFocus()
+					</OnEscapePressed>
+				</Scripts>
+			</EditBox>
+
+			<!-- Left pane: the category rail. Anchored TOPLEFT plus
+			     BOTTOMRIGHT, with no <Size> element, so its height is
+			     derived from layout. A same-side anchor pair (TOPLEFT plus
+			     BOTTOMLEFT, both pinning the left edge) combined with an
+			     explicit <Size> leaves GetHeight() stuck at the resting
+			     Size forever, which shows up as a scrollbar on a pane that
+			     has room to spare. The BOTTOMRIGHT x offset of 190
+			     reproduces the 178px rail width; the divider sits at
+			     x=198. -->
+			<ScrollFrame name="YABBCategoryScroll" parentKey="CategoryScroll" inherits="UIPanelScrollFrameTemplate">
+				<Anchors>
+					<Anchor point="TOPLEFT">
+						<Offset><AbsDimension x="12" y="-56"/></Offset>
+					</Anchor>
+					<Anchor point="BOTTOMRIGHT" relativePoint="BOTTOMLEFT">
+						<Offset><AbsDimension x="190" y="40"/></Offset>
+					</Anchor>
+				</Anchors>
+				<ScrollChild>
+					<Frame parentKey="ScrollChild">
+						<Size>
+							<AbsDimension x="178" y="100"/>
+						</Size>
+						<!-- Static "BY ACTIVITY" divider/caption (not pooled:
+						     there's exactly one). Positioned dynamically in
+						     Lua, right after "All Recent" - its XML anchors
+						     here are just harmless placeholders. -->
+						<Layers>
+							<Layer level="ARTWORK">
+								<Texture name="$parentRailSep1" parentKey="RailSep1">
+									<Size><AbsDimension x="0" y="1"/></Size>
+									<Anchors>
+										<Anchor point="TOPLEFT"/>
+										<Anchor point="TOPRIGHT"/>
+									</Anchors>
+								</Texture>
+								<FontString name="$parentRailCap1" parentKey="RailCap1" inherits="GameFontDisableSmall" text="BY ACTIVITY" justifyH="LEFT" maxLines="1">
+									<Anchors>
+										<Anchor point="TOPLEFT"/>
+									</Anchors>
+								</FontString>
+							</Layer>
+						</Layers>
+					</Frame>
+				</ScrollChild>
+			</ScrollFrame>
+
+			<!-- Right pane: listings. Wheel input wired from Lua - the cited
+			     GBB scroll list has no OnMouseWheel of its own (see UI.lua's
+			     wireMouseWheel). -->
+			<ScrollFrame name="YABBListingScroll" parentKey="ListingScroll" inherits="UIPanelScrollFrameTemplate">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeTo="$parentDivider" relativePoint="TOPRIGHT">
+						<Offset><AbsDimension x="10" y="0"/></Offset>
+					</Anchor>
+					<Anchor point="BOTTOMRIGHT">
+						<Offset><AbsDimension x="-28" y="40"/></Offset>
+					</Anchor>
+				</Anchors>
+				<ScrollChild>
+					<Frame parentKey="ScrollChild">
+						<Size>
+							<AbsDimension x="300" y="100"/>
+						</Size>
+					</Frame>
+				</ScrollChild>
+			</ScrollFrame>
+
+			<!-- Resize grip: native StartSizing/StopMovingOrSizing only,
+			     using Blizzard's own floating chat window resize button
+			     textures. -->
+			<Button parentKey="ResizeGrip">
+				<Size>
+					<AbsDimension x="16" y="16"/>
+				</Size>
+				<Anchors>
+					<Anchor point="BOTTOMRIGHT">
+						<Offset><AbsDimension x="-6" y="6"/></Offset>
+					</Anchor>
+				</Anchors>
+				<Scripts>
+					<OnMouseDown>
+						self:GetParent():StartSizing("BOTTOMRIGHT")
+					</OnMouseDown>
+					<OnMouseUp>
+						self:GetParent():StopMovingOrSizing()
+					</OnMouseUp>
+				</Scripts>
+				<NormalTexture file="Interface\ChatFrame\UI-ChatIM-SizeGrabber-Up"/>
+				<HighlightTexture file="Interface\ChatFrame\UI-ChatIM-SizeGrabber-Highlight"/>
+				<PushedTexture file="Interface\ChatFrame\UI-ChatIM-SizeGrabber-Down"/>
+			</Button>
+		</Frames>
+
+		<!-- Drag-to-move plus min size only: pure frame-native calls, no
+		     addon globals, so safe regardless of Lua/XML load order (see
+		     file-top note). 660x400 gives this row anatomy's fixed-width
+		     columns room before the layout gets cramped. -->
+		<Scripts>
+			<OnLoad>
+				self:RegisterForDrag("LeftButton")
+				self:SetMinResize(660, 400)
+				self:SetClampedToScreen(true)
+			</OnLoad>
+			<OnDragStart>
+				self:StartMoving()
+			</OnDragStart>
+			<OnDragStop>
+				self:StopMovingOrSizing()
+			</OnDragStop>
+		</Scripts>
+	</Frame>
+
+</Ui>

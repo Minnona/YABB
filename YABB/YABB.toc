@@ -1,0 +1,27 @@
+## Interface: 30300
+## Title: YABB |cffaaaaaa(Yet Another Bulletin Board)|r
+## Notes: Passive, read-only LFG bulletin board for Project Ascension. Watches your chat channels and sorts what it finds.
+## Author: srhinos
+## SavedVariables: YABB_DB
+## Version: 1.0.0
+## X-Website: https://github.com/srhinos/YABB
+## X-Category: Group Finder
+## X-License: GPL-3.0
+
+Loader.lua
+Content.generated.lua
+Content.aliases.lua
+Compat.lua
+Classifier.lua
+Board.lua
+Filters.lua
+Capture.lua
+Players.lua
+Ingest.lua
+UI.xml
+UI.lua
+FiltersUI.lua
+MinimapButton.lua
+Dump.lua
+Diag.lua
+Init.lua

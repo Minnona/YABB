@@ -1,0 +1,14 @@
+# Local dev scaffolding -- not part of the distributed addon
+docs/
+lua51/
+tests/
+tools/
+deploy.cmd
+.superpowers/
+
+# Build artifacts
+.release/
+dist/
+*.zip
+*.log
+.vscode/

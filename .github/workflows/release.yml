@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches YABB.toc version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          toc_version="$(grep -oP '(?<=^## Version: ).*' YABB/YABB.toc)"
+          if [ "$tag_version" != "$toc_version" ]; then
+            echo "Tag $GITHUB_REF_NAME (version $tag_version) does not match ## Version: $toc_version in YABB/YABB.toc"
+            exit 1
+          fi
+
+      - name: Stage LICENSE into the addon folder
+        run: cp LICENSE YABB/LICENSE
+
+      - name: Build zip
+        run: zip -r "YABB-${GITHUB_REF_NAME}.zip" YABB
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: YABB-${{ github.ref_name }}.zip
