@@ -21,6 +21,10 @@ Ingest.lua
 UI.xml
 UI.lua
 FiltersUI.lua
+PerformanceCompat.lua
+PerformancePlayers.lua
+PerformanceClassifier.lua
+PerformanceUI.lua
 MinimapButton.lua
 Dump.lua
 Diag.lua

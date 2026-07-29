@@ -2,18 +2,43 @@ local ADDON, ns = ...
 ns.Capture = ns.Capture or {}
 local Capture = ns.Capture
 
--- ============================================================
--- Persistent classifier-decision log, written to YABB_DB.captures (a
--- ring buffer, drop-oldest at CAPTURE_CAP) so real misclassifications
--- can be grepped out of a player's SavedVariables and fed back into the
--- classifier corpus for tuning. Quiet by default -- nothing is recorded
--- unless db.captureOn is explicitly true. Every function takes the db
--- table as its first argument rather than touching YABB_DB directly, so
--- this file never needs a WoW global to be exercised.
--- ============================================================
-
 local CAPTURE_CAP = 3000
 Capture.CAPTURE_CAP = CAPTURE_CAP
+
+local function normalise(db)
+  if not db then return nil, 1, 0 end
+  local list = db.captures
+  if type(list) ~= "table" then
+    list = {}
+    db.captures = list
+  end
+
+  local head = tonumber(db.captureHead)
+  local size = tonumber(db.captureSize)
+  if head and size then
+    head = math.floor(head)
+    size = math.floor(size)
+    if head < 1 or head > CAPTURE_CAP or size < 0 or size > CAPTURE_CAP then
+      head, size = nil, nil
+    end
+  end
+
+  -- Migrate the old dense append-only shape without changing export order.
+  if not head or not size then
+    size = #list
+    if size > CAPTURE_CAP then
+      local drop = size - CAPTURE_CAP
+      for i = 1, CAPTURE_CAP do list[i] = list[i + drop] end
+      for i = size, CAPTURE_CAP + 1, -1 do list[i] = nil end
+      size = CAPTURE_CAP
+    end
+    head = 1
+    db.captureHead = head
+    db.captureSize = size
+  end
+
+  return list, head, size
+end
 
 function Capture.isOn(db)
   return db ~= nil and db.captureOn == true
@@ -27,39 +52,51 @@ end
 function Capture.clear(db)
   if not db then return end
   db.captures = {}
+  db.captureHead = 1
+  db.captureSize = 0
 end
 
 function Capture.count(db)
-  if not db or not db.captures then return 0 end
-  return #db.captures
+  if not db then return 0 end
+  local _, _, size = normalise(db)
+  return size
 end
 
--- entry = {c=channel, p=poster, v=verdict, t=tag, r=raw}. No-op unless
--- Capture.isOn(db); ring-caps at CAPTURE_CAP by dropping the oldest
--- (index 1) entries, same drop-oldest convention as Diag.lua's own
--- LOG_CAP ring buffer.
+-- Fixed-size circular buffer: overwriting the oldest slot is O(1), unlike
+-- table.remove(list, 1), which shifted up to 3000 entries per capture.
 function Capture.record(db, entry)
   if not Capture.isOn(db) then return end
-  db.captures = db.captures or {}
-  local list = db.captures
+
+  local list, head, size = normalise(db)
   entry = entry or {}
-  list[#list + 1] = { c = entry.c, p = entry.p, v = entry.v, t = entry.t, r = entry.r }
-  while #list > CAPTURE_CAP do
-    table.remove(list, 1)
+  local stored = { c = entry.c, p = entry.p, v = entry.v, t = entry.t, r = entry.r }
+
+  local index
+  if size < CAPTURE_CAP then
+    index = ((head + size - 1) % CAPTURE_CAP) + 1
+    size = size + 1
+  else
+    index = head
+    head = (head % CAPTURE_CAP) + 1
   end
+
+  list[index] = stored
+  db.captureHead = head
+  db.captureSize = size
 end
 
--- One greppable tab-separated line per capture: "<verdict>\t<channel>\t
--- <poster>\t<tag>\t<raw>". db.captures is append order (oldest at index
--- 1), so iterating it in order naturally puts the newest capture last.
 function Capture.exportText(db)
-  if not db or not db.captures then return "" end
-  local list = db.captures
+  if not db then return "" end
+  local list, head, size = normalise(db)
+  if size == 0 then return "" end
+
   local lines = {}
-  for i = 1, #list do
-    local e = list[i]
+  for offset = 0, size - 1 do
+    local index = ((head + offset - 1) % CAPTURE_CAP) + 1
+    local e = list[index] or {}
     lines[#lines + 1] = table.concat({
-      tostring(e.v or ""), tostring(e.c or ""), tostring(e.p or ""), tostring(e.t or ""), tostring(e.r or ""),
+      tostring(e.v or ""), tostring(e.c or ""), tostring(e.p or ""),
+      tostring(e.t or ""), tostring(e.r or ""),
     }, "\t")
   end
   return table.concat(lines, "\n")
