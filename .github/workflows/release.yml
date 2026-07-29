@@ -17,17 +17,28 @@ jobs:
       - name: Check tag matches YABB.toc version
         run: |
           tag_version="${GITHUB_REF_NAME#v}"
-          toc_version="$(grep -oP '(?<=^## Version: ).*' YABB/YABB.toc)"
+          toc_version="$(grep -oP '(?<=^## Version: ).*' YABB.toc)"
           if [ "$tag_version" != "$toc_version" ]; then
-            echo "Tag $GITHUB_REF_NAME (version $tag_version) does not match ## Version: $toc_version in YABB/YABB.toc"
+            echo "Tag $GITHUB_REF_NAME (version $tag_version) does not match ## Version: $toc_version in YABB.toc"
             exit 1
           fi
 
-      - name: Stage LICENSE into the addon folder
-        run: cp LICENSE YABB/LICENSE
+      - name: Stage addon package
+        run: |
+          rm -rf .release
+          mkdir -p .release/YABB
+          cp YABB.toc LICENSE .release/YABB/
+          while IFS= read -r file; do
+            case "$file" in
+              ''|'#'*) continue ;;
+            esac
+            cp -- "$file" .release/YABB/
+          done < YABB.toc
 
       - name: Build zip
-        run: zip -r "YABB-${GITHUB_REF_NAME}.zip" YABB
+        run: |
+          cd .release
+          zip -r "../YABB-${GITHUB_REF_NAME}.zip" YABB
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
